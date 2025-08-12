@@ -169,5 +169,3 @@ Ctrl+Shift+P > Create Trello Task from Comments
 ```
 
 This will scan the current `.ts` file for eligible `[RED]` blocks and create tasks.
-
-
