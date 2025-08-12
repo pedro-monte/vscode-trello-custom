@@ -1,0 +1,41 @@
+{
+  "name": "vscode-trello-custom",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.102.0"
+  },
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onCommand:vscode-trello-custom.createTrelloTask",
+    "onCommand:vscode-trello-custom.insertTrelloTaskSnippet",
+    "onDidSaveTextDocument"
+  ],
+  "contributes": {
+    "commands": [
+      {
+        "command": "vscode-trello-custom.createTrelloTask",
+        "title": "Create Trello Task from Comments"
+      },
+      {
+        "command": "vscode-trello-custom.insertTrelloTaskSnippet",
+        "title": "Insert Trello Task Snippet"
+      }
+    ]
+  },
+  "dependencies": {
+    "axios": "^1.7.2",
+    "@types/vscode": "^1.102.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.4",
+    "@types/node": "^20.14.11",
+    "ts-loader": "^9.5.1",
+    "webpack": "^5.93.0",
+    "webpack-cli": "^5.1.4"
+  },
+  "scripts": {
+    "compile": "tsc",
+    "watch": "tsc -watch",
+    "build": "webpack"
+  }
+}
