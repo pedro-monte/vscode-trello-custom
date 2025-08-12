@@ -68,9 +68,14 @@ export function activate(context: vscode.ExtensionContext) {
 
     const currentTasks: Task[] = [];
     while ((match = trelloCommentRegex.exec(text)) !== null) {
-      const hasFinal = !!match[1]; // Check for [FINAL]
+      const hasFinal = !!match[1];
       const title = match[2].trim();
-      const checklist = match[3].split(/\n\s*\d+\./).slice(1).map(item => item.trim());
+      const checklistRaw = match[3].trim();
+      const checklist = checklistRaw
+        .split('\n')
+        .map(line => line.trim())
+        .filter(line => line.match(/^\d+\./)) // Ensure lines start with number
+        .map(line => line.replace(/^\d+\./, '').trim());
       if (!hasFinal) {
         currentTasks.push({ title, checklist, comment: match[0] });
       }
@@ -95,56 +100,79 @@ export function activate(context: vscode.ExtensionContext) {
       const taskHash = crypto.createHash('md5').update(task.comment).digest('hex');
       const existingTask = previousTasks.find(pt => crypto.createHash('md5').update(pt.comment).digest('hex') === taskHash);
 
-      if (!existingTask || !existingTask.cardId) {
-        try {
-          const cardResponse = await axios.post(
-            `https://api.trello.com/1/cards`,
-            {
-              name: task.title,
-              desc: `[RED] Created from VS Code: ${document.fileName}`,
-              pos: 'bottom',
-              idList: listId,
-              idLabels: redLabelId ? [redLabelId] : [],
-            },
-            {
-              params: { key: apiKey, token: apiToken },
-            }
+      if (existingTask && existingTask.cardId) {
+        // Skip if task already exists
+        task.cardId = existingTask.cardId;
+        task.checklistId = existingTask.checklistId;
+        continue;
+      }
+
+      try {
+        // Check for existing card with same title in list
+        const cardsResponse = await axios.get(
+          `https://api.trello.com/1/lists/${listId}/cards`,
+          { params: { key: apiKey, token: apiToken } }
+        );
+        const existingCard = cardsResponse.data.find((card: any) => card.name === task.title);
+        if (existingCard) {
+          task.cardId = existingCard.id;
+          const checklistsResponse = await axios.get(
+            `https://api.trello.com/1/cards/${existingCard.id}/checklists`,
+            { params: { key: apiKey, token: apiToken } }
           );
-
-          const cardId = cardResponse.data.id;
-          task.cardId = cardId;
-
-          const checklistResponse = await axios.post(
-            `https://api.trello.com/1/checklists`,
-            {
-              name: 'Checklist',
-              idCard: cardId,
-              pos: 'bottom',
-            },
-            {
-              params: { key: apiKey, token: apiToken },
-            }
-          );
-
-          const checklistId = checklistResponse.data.id;
-          task.checklistId = checklistId;
-
-          for (const item of task.checklist) {
-            await axios.post(
-              `https://api.trello.com/1/checklists/${checklistId}/checkItems`,
-              {
-                name: item,
-                pos: 'bottom',
-              },
-              { params: { key: apiKey, token: apiToken } }
-            );
-          }
-
-          vscode.window.showInformationMessage(`Trello card created: ${task.title}`);
-        } catch (error: any) {
-          vscode.window.showErrorMessage(`Failed to create Trello card: ${error.message}`);
+          task.checklistId = checklistsResponse.data[0]?.id;
+          vscode.window.showInformationMessage(`Task already exists in Trello: ${task.title}`);
           continue;
         }
+
+        // Create new card
+        const cardResponse = await axios.post(
+          `https://api.trello.com/1/cards`,
+          {
+            name: task.title,
+            desc: `[RED] Created from VS Code: ${document.fileName}`,
+            pos: 'bottom',
+            idList: listId,
+            idLabels: redLabelId ? [redLabelId] : [],
+          },
+          {
+            params: { key: apiKey, token: apiToken },
+          }
+        );
+
+        const cardId = cardResponse.data.id;
+        task.cardId = cardId;
+
+        const checklistResponse = await axios.post(
+          `https://api.trello.com/1/checklists`,
+          {
+            name: 'Checklist',
+            idCard: cardId,
+            pos: 'bottom',
+          },
+          {
+            params: { key: apiKey, token: apiToken },
+          }
+        );
+
+        const checklistId = checklistResponse.data.id;
+        task.checklistId = checklistId;
+
+        for (const item of task.checklist) {
+          await axios.post(
+            `https://api.trello.com/1/checklists/${checklistId}/checkItems`,
+            {
+              name: item,
+              pos: 'bottom',
+            },
+            { params: { key: apiKey, token: apiToken } }
+          );
+        }
+
+        vscode.window.showInformationMessage(`Trello card created: ${task.title}`);
+      } catch (error: any) {
+        vscode.window.showErrorMessage(`Failed to create Trello card: ${error.message}`);
+        continue;
       }
     }
 
@@ -173,7 +201,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // Command: Create Trello Task from Comments
-  let createTaskDisposable:any = vscode.commands.registerCommand('vscode-trello-custom.createTrelloTask', async () => {
+  let createTaskDisposable = vscode.commands.registerCommand('vscode-trello-custom.createTrelloTask', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       vscode.window.showErrorMessage('No active editor');
