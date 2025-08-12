@@ -4,11 +4,11 @@ import * as vscode from 'vscode';
 
 interface Task {
   title: string;
-  checklist: { text: string; checked: boolean }[];
+  checklist: string[]; // Simplified to plain items
   comment: string;
   cardId?: string;
   checklistId?: string;
-  deprecated?: boolean; // Flag to mark tasks moved to another list
+  deprecated?: boolean;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -32,20 +32,15 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const checklistInput = await vscode.window.showInputBox({
-      prompt: 'Enter checklist items (comma-separated, use [x] or [] for status)',
-      placeHolder: 'e.g., [x]Validate product prices,[ ]Check shipping fee,[ ]Ensure total matches',
+      prompt: 'Enter checklist items (comma-separated)',
+      placeHolder: 'e.g., Validate product prices,Check shipping fee,Ensure total matches',
     });
     if (!checklistInput) {
       vscode.window.showInformationMessage('Checklist items are required');
       return;
     }
 
-    const checklistItems = checklistInput.split(',').map((item, index) => {
-      const trimmed = item.trim();
-      const checked = trimmed.startsWith('[x]');
-      const text = trimmed.replace(/^\[x\]|\[\]/, '').trim();
-      return `${index + 1}.${trimmed}`;
-    });
+    const checklistItems = checklistInput.split(',').map((item, index) => `${index + 1}.${item.trim()}`);
     const checklistText = checklistItems.join('\n');
 
     const snippet = `/* [RED] trello task ${taskTitle}, checklist items\n${checklistText}\n*/`;
@@ -98,10 +93,7 @@ export function activate(context: vscode.ExtensionContext) {
           );
           const trelloItems = checklistResponse.data;
 
-          const checklistText = trelloItems.map((item: any, index: number) => {
-            const status = item.state === 'complete' ? '[x]' : '[]';
-            return `${index + 1}.${status}${item.name}`;
-          }).join('\n');
+          const checklistText = trelloItems.map((item: any, index: number) => `${index + 1}.${item.name}`).join('\n');
 
           const newComment = `/* [RED] trello task ${task.title}, checklist items\n${checklistText}\n*/`;
           const taskHash = crypto.createHash('md5').update(task.comment).digest('hex');
@@ -146,12 +138,7 @@ export function activate(context: vscode.ExtensionContext) {
     const currentTasks: Task[] = [];
     while ((match = trelloCommentRegex.exec(text)) !== null) {
       const title = match[1].trim();
-      const checklistRaw = match[2].split(/\n\s*\d+\./).slice(1).map(item => item.trim());
-      const checklist = checklistRaw.map(item => {
-        const checked = item.startsWith('[x]');
-        const text = item.replace(/^\[x\]|\[\]/, '').trim();
-        return { text, checked };
-      });
+      const checklist = match[2].split(/\n\s*\d+\./).slice(1).map(item => item.trim());
       currentTasks.push({ title, checklist, comment: match[0] });
     }
 
@@ -175,7 +162,7 @@ export function activate(context: vscode.ExtensionContext) {
       const existingTask = previousTasks.find(pt => crypto.createHash('md5').update(pt.comment).digest('hex') === taskHash);
 
       if (existingTask?.deprecated) {
-        continue; // Skip deprecated tasks
+        continue;
       }
 
       if (!existingTask || !existingTask.cardId) {
@@ -216,8 +203,7 @@ export function activate(context: vscode.ExtensionContext) {
             await axios.post(
               `https://api.trello.com/1/checklists/${checklistId}/checkItems`,
               {
-                name: item.text,
-                checked: item.checked,
+                name: item,
                 pos: 'bottom',
               },
               { params: { key: apiKey, token: apiToken } }
@@ -230,7 +216,6 @@ export function activate(context: vscode.ExtensionContext) {
           continue;
         }
       } else {
-        // Check if existing card is still in the specified list
         try {
           const cardResponse = await axios.get(
             `https://api.trello.com/1/cards/${existingTask.cardId}`,
@@ -253,7 +238,7 @@ export function activate(context: vscode.ExtensionContext) {
   });
 
   // Command: Create Trello Task from Comments
-  let createTaskDisposable: any = vscode.commands.registerCommand('vscode-trello-custom.createTrelloTask', async () => {
+  let createTaskDisposable:any = vscode.commands.registerCommand('vscode-trello-custom.createTrelloTask', async () => {
     const editor = vscode.window.activeTextEditor;
     if (!editor) {
       vscode.window.showErrorMessage('No active editor');
