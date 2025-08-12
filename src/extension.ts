@@ -4,11 +4,10 @@ import * as vscode from 'vscode';
 
 interface Task {
   title: string;
-  checklist: string[]; // Simplified to plain items
+  checklist: string[];
   comment: string;
   cardId?: string;
   checklistId?: string;
-  deprecated?: boolean;
 }
 
 export function activate(context: vscode.ExtensionContext) {
@@ -40,89 +39,21 @@ export function activate(context: vscode.ExtensionContext) {
       return;
     }
 
+    const includeFinal = await vscode.window.showQuickPick(['No', 'Yes'], {
+      placeHolder: 'Include [FINAL] codeword to skip task creation?',
+    });
+    const finalTag = includeFinal === 'Yes' ? '[FINAL] ' : '';
+
     const checklistItems = checklistInput.split(',').map((item, index) => `${index + 1}.${item.trim()}`);
     const checklistText = checklistItems.join('\n');
 
-    const snippet = `/* [RED] trello task ${taskTitle}, checklist items\n${checklistText}\n*/`;
+    const snippet = `/* [RED] ${finalTag}trello task ${taskTitle}, checklist items\n${checklistText}\n*/`;
     editor.edit(editBuilder => {
       const position = editor.selection.active;
       editBuilder.insert(position, snippet);
     });
 
     vscode.window.showInformationMessage(`Trello task snippet inserted: ${taskTitle}`);
-  });
-
-  // Command: Sync Trello Changes to Comments
-  let syncTrelloChangesDisposable = vscode.commands.registerCommand('vscode-trello-custom.syncTrelloChanges', async () => {
-    const config = vscode.workspace.getConfiguration('vscode-trello-custom');
-    const apiKey = config.get('apiKey');
-    const apiToken = config.get('apiToken');
-    const listId = config.get('listId');
-
-    if (!apiKey || !apiToken || !listId) {
-      vscode.window.showErrorMessage('Missing Trello API credentials or List ID in settings');
-      return;
-    }
-
-    const storedTasks: { [file: string]: Task[] } = taskStorage.get('trelloTasks', {});
-    for (const fileKey of Object.keys(storedTasks)) {
-      const tasks = storedTasks[fileKey];
-      const document = await vscode.workspace.openTextDocument(fileKey);
-      if (!document) {continue;}
-
-      let text = document.getText();
-      for (const task of tasks) {
-        if (task.deprecated || !task.cardId || !task.checklistId) {continue;}
-
-        try {
-          // Check if card is still in the specified list
-          const cardResponse = await axios.get(
-            `https://api.trello.com/1/cards/${task.cardId}`,
-            { params: { key: apiKey, token: apiToken } }
-          );
-          if (cardResponse.data.idList !== listId) {
-            task.deprecated = true;
-            vscode.window.showInformationMessage(`Task marked as deprecated: ${task.title} (moved to another list)`);
-            continue;
-          }
-
-          // Fetch checklist items
-          const checklistResponse = await axios.get(
-            `https://api.trello.com/1/checklists/${task.checklistId}/checkItems`,
-            { params: { key: apiKey, token: apiToken } }
-          );
-          const trelloItems = checklistResponse.data;
-
-          const checklistText = trelloItems.map((item: any, index: number) => `${index + 1}.${item.name}`).join('\n');
-
-          const newComment = `/* [RED] trello task ${task.title}, checklist items\n${checklistText}\n*/`;
-          const taskHash = crypto.createHash('md5').update(task.comment).digest('hex');
-          const regex = new RegExp(`\\/\\*\\s*\\[RED\\]\\s*trello task ${task.title.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')},\\s*checklist items[\\s\\S]*?\\*\\/`, 'g');
-
-          if (text.includes(task.comment)) {
-            text = text.replace(regex, newComment);
-            task.comment = newComment;
-          }
-        } catch (error) {
-          vscode.window.showErrorMessage(`Failed to sync Trello card: ${task.title}`);
-          continue;
-        }
-      }
-
-      const workspaceEdit = new vscode.WorkspaceEdit();
-      workspaceEdit.replace(
-        document.uri,
-        new vscode.Range(0, 0, document.lineCount, 0),
-        text
-      );
-      await vscode.workspace.applyEdit(workspaceEdit);
-      await document.save();
-
-      storedTasks[fileKey] = tasks;
-      await taskStorage.update('trelloTasks', storedTasks);
-    }
-
-    vscode.window.showInformationMessage('Synced Trello changes to comments');
   });
 
   // onSave: Create Trello Tasks
@@ -132,14 +63,17 @@ export function activate(context: vscode.ExtensionContext) {
     }
 
     const text = document.getText();
-    const trelloCommentRegex = /\/\*\s*\[RED\]\s*trello task ([^,]+),\s*checklist items\s*([\s\S]*?)\s*\*\//g;
+    const trelloCommentRegex = /\/\*\s*\[RED\]\s*(\[FINAL\]\s*)?trello task ([^,]+),\s*checklist items\s*([\s\S]*?)\s*\*\//g;
     let match;
 
     const currentTasks: Task[] = [];
     while ((match = trelloCommentRegex.exec(text)) !== null) {
-      const title = match[1].trim();
-      const checklist = match[2].split(/\n\s*\d+\./).slice(1).map(item => item.trim());
-      currentTasks.push({ title, checklist, comment: match[0] });
+      const hasFinal = !!match[1]; // Check for [FINAL]
+      const title = match[2].trim();
+      const checklist = match[3].split(/\n\s*\d+\./).slice(1).map(item => item.trim());
+      if (!hasFinal) {
+        currentTasks.push({ title, checklist, comment: match[0] });
+      }
     }
 
     const config = vscode.workspace.getConfiguration('vscode-trello-custom');
@@ -160,10 +94,6 @@ export function activate(context: vscode.ExtensionContext) {
     for (const task of currentTasks) {
       const taskHash = crypto.createHash('md5').update(task.comment).digest('hex');
       const existingTask = previousTasks.find(pt => crypto.createHash('md5').update(pt.comment).digest('hex') === taskHash);
-
-      if (existingTask?.deprecated) {
-        continue;
-      }
 
       if (!existingTask || !existingTask.cardId) {
         try {
@@ -215,23 +145,28 @@ export function activate(context: vscode.ExtensionContext) {
           vscode.window.showErrorMessage(`Failed to create Trello card: ${error.message}`);
           continue;
         }
-      } else {
+      }
+    }
+
+    // Commented out: Delete tasks for removed comments
+    /*
+    for (const prevTask of previousTasks) {
+      const taskHash = crypto.createHash('md5').update(prevTask.comment).digest('hex');
+      if (!currentTasks.some(ct => crypto.createHash('md5').update(ct.comment).digest('hex') === taskHash) && prevTask.cardId) {
         try {
-          const cardResponse = await axios.get(
-            `https://api.trello.com/1/cards/${existingTask.cardId}`,
-            { params: { key: apiKey, token: apiToken } }
+          await axios.delete(
+            `https://api.trello.com/1/cards/${prevTask.cardId}`,
+            {
+              params: { key: apiKey, token: apiToken },
+            }
           );
-          if (cardResponse.data.idList !== listId) {
-            existingTask.deprecated = true;
-            vscode.window.showInformationMessage(`Task marked as deprecated: ${task.title} (moved to another list)`);
-            continue;
-          }
+          vscode.window.showInformationMessage(`Trello card deleted: ${prevTask.title}`);
         } catch (error) {
-          vscode.window.showErrorMessage(`Failed to check Trello card: ${task.title}`);
-          continue;
+          vscode.window.showErrorMessage(`Failed to delete Trello card: ${error.message}`);
         }
       }
     }
+    */
 
     storedTasks[fileKey] = currentTasks;
     await taskStorage.update('trelloTasks', storedTasks);
@@ -247,15 +182,7 @@ export function activate(context: vscode.ExtensionContext) {
     await onSaveDisposable.listener(editor.document);
   });
 
-  // Polling for Trello Updates
-  const pollInterval = 60000;
-  const pollTrello = async () => {
-    await vscode.commands.executeCommand('vscode-trello-custom.syncTrelloChanges');
-  };
-  const interval = setInterval(pollTrello, pollInterval);
-  context.subscriptions.push({ dispose: () => clearInterval(interval) });
-
-  context.subscriptions.push(insertSnippetDisposable, syncTrelloChangesDisposable, onSaveDisposable, createTaskDisposable);
+  context.subscriptions.push(insertSnippetDisposable, onSaveDisposable, createTaskDisposable);
 }
 
 export function deactivate() {}
